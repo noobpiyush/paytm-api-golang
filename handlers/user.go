@@ -1,12 +1,14 @@
+// handlers/auth.go
 package handlers
 
 import (
 	"encoding/json"
-	"io"
 	"log"
 	"net/http"
 
+	"github.com/noobpiyush/paytm-api/db"
 	"github.com/noobpiyush/paytm-api/jwt"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type SignupRequest struct {
@@ -21,144 +23,114 @@ type SigninRequest struct {
 }
 
 func SignupHandler(w http.ResponseWriter, r *http.Request) {
-	// Method checking
-
 	if r.Method != http.MethodPost {
-		sendError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		sendError(w, http.StatusMethodNotAllowed, "only POST method is allowed")
 		return
 	}
 
-	//content typpe cehecking
-
-	contentType := r.Header.Get("Content-Type")
-
-	if contentType != "application/json" {
+	if r.Header.Get("Content-Type") != "application/json" {
 		sendError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 		return
 	}
-
-	// read body with size limit of 1 mb
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
-
-	body, err := io.ReadAll(r.Body)
-
-	if err != nil {
-		sendError(w, http.StatusBadRequest, "Failed to read request body")
-		return
-	}
-
-	log.Print(string(body))
-
-	//parse json
-
 	var signupReq SignupRequest
-
-	if err := json.Unmarshal(body, &signupReq); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&signupReq); err != nil {
 		sendError(w, http.StatusBadRequest, "invalid JSON format")
 		return
 	}
 
+	// Validate required fields
 	if signupReq.FullName == "" || signupReq.Email == "" || signupReq.Password == "" {
 		sendError(w, http.StatusBadRequest, "fullName, email and password are required")
 		return
 	}
 
-	log.Printf("Signup request received for user: %s", signupReq.FullName)
-
-	token, errFromToken := jwt.CreateToken(signupReq.FullName)
-
-	if errFromToken != nil {
-		log.Fatalf("Failed to create token: %v", errFromToken)
-		return
-	}
-	log.Printf("printing ip \n")
-	GetIP(r)
-
-	if len(token) == 0 {
-		log.Fatal("error creating token")
-		return
-	}
-
-	sendSuccess(w, http.StatusCreated, "user registered successfully", map[string]string{
-		"fullName": signupReq.FullName,
-		"email":    signupReq.Email,
-		"token":    token,
-	})
-
-}
-
-func GetIP(r *http.Request) string {
-	// Get IP from X-FORWARDED-FOR header
-	forwarded := r.Header.Get("X-FORWARDED-FOR")
-	if forwarded != "" {
-		return forwarded
-	}
-	// Fall back to RemoteAddr
-	return r.RemoteAddr
-}
-func SigninHandler(w http.ResponseWriter, r *http.Request) {
-	// Method checking
-
-	if r.Method != http.MethodPost {
-		sendError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
-		return
-	}
-
-	//content typpe cehecking
-
-	contentType := r.Header.Get("Content-Type")
-
-	if contentType != "application/json" {
-		sendError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
-		return
-	}
-
-	// read body with size limit of 1 mb
-
-	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
-
-	body, err := io.ReadAll(r.Body)
-
+	// Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(signupReq.Password), bcrypt.DefaultCost)
 	if err != nil {
-		sendError(w, http.StatusBadRequest, "Failed to read request body")
+		log.Printf("Error hashing password: %v", err)
+		sendError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
-	// log.Print(string(body))
+	// Create user
+	err = db.CreateUser(signupReq.Email, string(hashedPassword), signupReq.FullName)
+	if err == db.ErrUserExists {
+		sendError(w, http.StatusConflict, "email already registered")
+		return
+	}
+	if err != nil {
+		log.Printf("Error creating user: %v", err)
+		sendError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
 
-	//parse json
+	// Generate token
+	token, err := jwt.CreateToken(signupReq.Email)
+	if err != nil {
+		log.Printf("Failed to create token: %v", err)
+		sendError(w, http.StatusInternalServerError, "error creating authentication token")
+		return
+	}
+
+	sendSuccess(w, http.StatusCreated, "user registered successfully", map[string]interface{}{
+		"token": token,
+		"user": map[string]interface{}{
+			"email":    signupReq.Email,
+			"fullName": signupReq.FullName,
+		},
+	})
+}
+
+func SigninHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		sendError(w, http.StatusMethodNotAllowed, "only POST method is allowed")
+		return
+	}
+
+	if r.Header.Get("Content-Type") != "application/json" {
+		sendError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return
+	}
 
 	var signinReq SigninRequest
-
-	if err := json.Unmarshal(body, &signinReq); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&signinReq); err != nil {
 		sendError(w, http.StatusBadRequest, "invalid JSON format")
 		return
 	}
-	//validate fields
+
 	if signinReq.Email == "" || signinReq.Password == "" {
-		sendError(w, http.StatusBadRequest, "email or password is wrong")
+		sendError(w, http.StatusBadRequest, "email and password are required")
 		return
 	}
 
-	//bunch of db calls
-
-	token, err := jwt.CreateToken(signinReq.Email)
-
+	// Get user from database
+	user, err := db.GetUserByEmail(signinReq.Email)
 	if err != nil {
-		log.Printf("failed to create token %v", err)
-		sendError(w, http.StatusInternalServerError, "error creating token")
+		sendError(w, http.StatusUnauthorized, "invalid email or password")
 		return
 	}
 
-	clientIP := GetIP(r)
+	// Compare password
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(signinReq.Password)); err != nil {
+		sendError(w, http.StatusUnauthorized, "invalid email or password")
+		return
+	}
 
-	log.Printf("Signin attempt from IP: %s for email: %s\n", clientIP, signinReq.Email)
+	// Generate token
+	token, err := jwt.CreateToken(user.Email)
+	if err != nil {
+		log.Printf("Failed to create token: %v", err)
+		sendError(w, http.StatusInternalServerError, "error creating authentication token")
+		return
+	}
 
-	// 9. Send success response with token
-	sendSuccess(w, http.StatusOK, "signin successful", map[string]string{
-		"email": signinReq.Email,
+	sendSuccess(w, http.StatusOK, "signin successful", map[string]interface{}{
 		"token": token,
+		"user": map[string]interface{}{
+			"email":    user.Email,
+			"fullName": user.FullName,
+		},
 	})
-
 }

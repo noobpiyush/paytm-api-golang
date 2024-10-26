@@ -1,2 +1,17 @@
+# Binaries for programs and plugins
+*.exe
+*.out
+*.dll
+*.so
+*.dylib
 .env
-.exe
+
+# Logs
+*.log
+
+# Vendor directory
+/vendor/
+
+# Go workspace files (optional)
+go.work
+go.work.sum

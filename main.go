@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/joho/godotenv"
+	"github.com/noobpiyush/paytm-api/db"
 	"github.com/noobpiyush/paytm-api/routes"
 )
 
@@ -14,6 +15,12 @@ func main() {
 	if err != nil {
 		log.Fatal("Error loading .env file")
 	}
+
+	if err := db.InitDB(); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+
+	defer db.DB.Close()
 
 	PORT := os.Getenv("PORT")
 
